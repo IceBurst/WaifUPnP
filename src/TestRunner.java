@@ -3,7 +3,7 @@ import com.dosse.upnp.UPnP;
 public class TestRunner {
 
     // We use a high port number to avoid conflicts with existing services
-    private static final int TEST_PORT = 12392;
+    private static final int TEST_PORT = 12398;
 
     public static void main(String[] args) {
         System.out.println("=== WaifUPnP (Java 11) Diagnostic Tool ===");
@@ -11,9 +11,9 @@ public class TestRunner {
         System.out.println("------------------------------------------");
 
         // 1. Initial Check
-        System.out.println("[1/4] Checking status of port " + TEST_PORT + "...");
+        System.out.println("[1/5] Checking status of port " + TEST_PORT + "...");
         boolean initiallyMapped = UPnP.isMappedTCP(TEST_PORT);
-        
+
         if (initiallyMapped) {
             System.err.println("WARNING: Port " + TEST_PORT + " is ALREADY open/mapped.");
             System.err.println("Please change TEST_PORT in Main.java or close it manually on your router.");
@@ -23,12 +23,24 @@ public class TestRunner {
             System.out.println("      Port is currently closed (Good).");
         }
 
-        // 2. Open Port
-        System.out.println("\n[2/4] Attempting to map TCP port " + TEST_PORT + "...");
+        // 2. Availability & External IP Check
+        System.out.println("\n[2/5] Checking UPnP Availability & External IP...");
+        boolean available = UPnP.isUPnPAvailable();
+        System.out.println("      UPnP Available: " + available);
+
+        if (available) {
+            String ip = UPnP.getExternalAddress();
+            System.out.println("      External IP:    " + (ip != null ? ip : "Unknown (Failed to fetch)"));
+        } else {
+            System.err.println("      WARNING: UPnP reported as unavailable. Subsequent steps may fail.");
+        }
+
+        // 3. Open Port
+        System.out.println("\n[3/5] Attempting to map TCP port " + TEST_PORT + "...");
         System.out.println("      (This may take a few seconds as we discover the gateway...)");
-        
+
         boolean openSuccess = UPnP.openPortTCP(TEST_PORT, "Qortal-TestTool");
-        
+
         if (openSuccess) {
             System.out.println("      SUCCESS: Library reported port opened.");
         } else {
@@ -38,10 +50,10 @@ public class TestRunner {
             return;
         }
 
-        // 3. Verification
-        System.out.println("\n[3/4] Verifying with Router...");
+        // 4. Verification
+        System.out.println("\n[4/5] Verifying with Router...");
         boolean verified = UPnP.isMappedTCP(TEST_PORT);
-        
+
         if (verified) {
             System.out.println("      SUCCESS: Router confirmed port is mapped.");
         } else {
@@ -49,8 +61,8 @@ public class TestRunner {
             // We continue to cleanup anyway, just in case
         }
 
-        // 4. Cleanup
-        System.out.println("\n[4/4] Cleaning up (Closing port)...");
+        // 5. Cleanup
+        System.out.println("\n[5/5] Cleaning up (Closing port)...");
         boolean closeSuccess = UPnP.closePortTCP(TEST_PORT);
 
         if (closeSuccess) {

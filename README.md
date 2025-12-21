@@ -13,7 +13,7 @@ using literally 1 line of code, as it should be!
 It's as easy as:
 
 ```java
-UPnP.openPortTCP(<port number here>);
+UPnP.openPortTCP(<portNumberHere>);
 ```
 
 Usage Examples are included.
@@ -38,7 +38,7 @@ WaifUPnP is a very basic implementation of UPnP, that only scans for the default
 While this is enough for most people, if you need a full implementation of UPnP, you should take a look at [Cling](http://4thline.org/projects/cling/)
 
 ## License
-Copyright (C) 2015-2018 Federico Dossena
+Copyright (C) 2015-2018 Federico Dossena<br>
 Copyright (C) 2025 Ice
 
 This program is free software: you can redistribute it and/or modify

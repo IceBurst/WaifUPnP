@@ -34,20 +34,22 @@ public class UPnP {
 
     private static final boolean DEBUG = false;
     private static final String DISCOVER_MESSAGE =
-        "M-SEARCH * HTTP/1.1\r\n" +
-        "HOST: 239.255.255.250:1900\r\n" +
-        "MAN: \"ssdp:discover\"\r\n" +
-        "MX: 2\r\n" +
-        "ST: urn:schemas-upnp-org:service:WANIPConnection:1\r\n" +
-        "\r\n";
+            "M-SEARCH * HTTP/1.1\r\n" +
+                    "HOST: 239.255.255.250:1900\r\n" +
+                    "MAN: \"ssdp:discover\"\r\n" +
+                    "MX: 2\r\n" +
+                    "ST: urn:schemas-upnp-org:service:WANIPConnection:1\r\n" +
+                    "\r\n";
 
     private static final String SOAP_ACTION_BASE = "urn:schemas-upnp-org:service:WANIPConnection:1#";
-    
-    private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(3))
-        .build();
 
+    private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(3))
+            .build();
+
+    private static boolean isAvailable = false;
     private static String gatewayAddress = null;
+    private static String externalAddress = null;
     private static String controlUrl = null;
     private static InetAddress localAddress = null; // Cache the detected local IP
 
@@ -55,9 +57,23 @@ public class UPnP {
     // PUBLIC API
     // =============================================================
 
+    public static boolean isUPnPAvailable() {
+        if (!isAvailable) {
+            findGateway();
+        }
+        return isAvailable;
+    }
+
+    public static String getExternalAddress() {
+        if (!isAvailable) {
+            findGateway();
+        }
+        return externalAddress;
+    }
+
     public static boolean openPortTCP(int port) { return execute(port, "TCP", "AddPortMapping", null); }
     public static boolean openPortTCP(int port, String desc) { return execute(port, "TCP", "AddPortMapping", desc); }
-    
+
     public static boolean openPortUDP(int port) { return execute(port, "UDP", "AddPortMapping", null); }
     public static boolean openPortUDP(int port, String desc) { return execute(port, "UDP", "AddPortMapping", desc); }
 
@@ -84,14 +100,14 @@ public class UPnP {
 
         // Debug output
         if (DEBUG) System.out.print("Transmitting: " + body + "\n\n");
-        
+
         try {
             var request = HttpRequest.newBuilder()
-                .uri(URI.create(controlUrl))
-                .header("Content-Type", "text/xml")
-                .header("SOAPAction", soapAction)
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
+                    .uri(URI.create(controlUrl))
+                    .header("Content-Type", "text/xml")
+                    .header("SOAPAction", soapAction)
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
 
             var response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
             if (DEBUG) {
@@ -103,6 +119,38 @@ public class UPnP {
         } catch (Exception e) {
             System.err.println("WaifUPnP: Request failed: " + e.getMessage());
             return false;
+        }
+    }
+
+    private static void refreshExternalIP() {
+        if (controlUrl == null) return;
+
+        String action = "GetExternalIPAddress";
+        String soapAction = SOAP_ACTION_BASE + action;
+        String body = buildSoapBody(action, 0, null, null);
+
+        try {
+            var request = HttpRequest.newBuilder()
+                    .uri(URI.create(controlUrl))
+                    .header("Content-Type", "text/xml")
+                    .header("SOAPAction", soapAction)
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+
+            var response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                String responseBody = response.body();
+                // Simple parsing to avoid heavy XML dependencies
+                int start = responseBody.indexOf("<NewExternalIPAddress>");
+                int end = responseBody.indexOf("</NewExternalIPAddress>");
+                if (start != -1 && end != -1) {
+                    externalAddress = responseBody.substring(start + 22, end).trim();
+                    if (DEBUG) System.out.println("External IP: " + externalAddress);
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("WaifUPnP: Failed to fetch external IP: " + e.getMessage());
         }
     }
 
@@ -125,66 +173,72 @@ public class UPnP {
         // 2. Bind the UDP socket specifically to this address
         try (var socket = new DatagramSocket(0, localAddress)) {
             socket.setSoTimeout(3000);
-            
+
             var txPacket = new DatagramPacket(
-                DISCOVER_MESSAGE.getBytes(StandardCharsets.UTF_8),
-                DISCOVER_MESSAGE.length(),
-                InetAddress.getByName("239.255.255.250"),
-                1900
+                    DISCOVER_MESSAGE.getBytes(StandardCharsets.UTF_8),
+                    DISCOVER_MESSAGE.length(),
+                    InetAddress.getByName("239.255.255.250"),
+                    1900
             );
 
             socket.send(txPacket);
 
             var rxBuffer = new byte[2048];
-            
+
             while (true) {
                 var rxPacket = new DatagramPacket(rxBuffer, rxBuffer.length);
                 socket.receive(rxPacket);
-                
+
                 var response = new String(rxPacket.getData(), 0, rxPacket.getLength(), StandardCharsets.UTF_8);
                 var location = parseLocation(response);
-                
+
                 if (location != null) {
                     gatewayAddress = location;
                     if (DEBUG) System.out.print("Found gateway at:" + location + "\n\n");
-                    return fetchControlUrl(location);
+
+                    if (fetchControlUrl(location)) {
+                        isAvailable = true;
+                        refreshExternalIP(); // Fetch the IP now that we have the gateway
+                        return true;
+                    }
                 }
             }
         } catch (SocketTimeoutException e) {
-            System.err.println("WaifUPnP: Timeout waiting for router response.");
+            // Quietly fail on timeout if not debugging, as this is expected if no router is found
+            if (DEBUG) System.err.println("WaifUPnP: Timeout waiting for router response.");
             return false;
         } catch (Exception e) {
             e.printStackTrace();
             return false;
         }
     }
-    
+
     private static boolean fetchControlUrl(String location) {
         try {
             var request = HttpRequest.newBuilder().uri(URI.create(location)).GET().build();
             var response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
-            
+
             if (response.statusCode() != 200) return false;
-            
+
             String xml = response.body();
             int start = xml.indexOf("urn:schemas-upnp-org:service:WANIPConnection:1");
             if (start == -1) return false;
-            
+
             int controlStart = xml.indexOf("<controlURL>", start);
             int controlEnd = xml.indexOf("</controlURL>", controlStart);
-            
+
             if (controlStart == -1 || controlEnd == -1) return false;
-            
+
             String path = xml.substring(controlStart + 12, controlEnd).trim();
-            
+
             if (path.startsWith("http")) {
                 controlUrl = path;
             } else {
-                 var uri = URI.create(location);
-                 controlUrl = "http://" + uri.getHost() + ":" + uri.getPort() + path;
+                var uri = URI.create(location);
+                controlUrl = "http://" + uri.getHost() + ":" + uri.getPort() + path;
             }
             return true;
-            
+
         } catch (Exception e) {
             e.printStackTrace();
             return false;
@@ -203,36 +257,38 @@ public class UPnP {
     private static String buildSoapBody(String action, int port, String protocol, String description) {
         StringBuilder sb = new StringBuilder();
         sb.append("<?xml version=\"1.0\"?>")
-          .append("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" ")
-          .append("s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">")
-          .append("<s:Body>")
-          .append("<u:").append(action).append(" xmlns:u=\"urn:schemas-upnp-org:service:WANIPConnection:1\">");
+                .append("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" ")
+                .append("s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">")
+                .append("<s:Body>")
+                .append("<u:").append(action).append(" xmlns:u=\"urn:schemas-upnp-org:service:WANIPConnection:1\">");
 
         if (action.equals("AddPortMapping")) {
             // FIX: We must send the actual IP, not localhost, or the router will reject it.
             String clientIP = (localAddress != null) ? localAddress.getHostAddress() : "127.0.0.1";
 
             sb.append("<NewRemoteHost></NewRemoteHost>")
-              .append("<NewExternalPort>").append(port).append("</NewExternalPort>")
-              .append("<NewProtocol>").append(protocol).append("</NewProtocol>")
-              .append("<NewInternalPort>").append(port).append("</NewInternalPort>")
-              .append("<NewInternalClient>").append(clientIP).append("</NewInternalClient>")
-              .append("<NewEnabled>1</NewEnabled>")
-              .append("<NewPortMappingDescription>").append(description == null ? "WaifUPnP" : description).append("</NewPortMappingDescription>")
-              .append("<NewLeaseDuration>0</NewLeaseDuration>");
+                    .append("<NewExternalPort>").append(port).append("</NewExternalPort>")
+                    .append("<NewProtocol>").append(protocol).append("</NewProtocol>")
+                    .append("<NewInternalPort>").append(port).append("</NewInternalPort>")
+                    .append("<NewInternalClient>").append(clientIP).append("</NewInternalClient>")
+                    .append("<NewEnabled>1</NewEnabled>")
+                    .append("<NewPortMappingDescription>").append(description == null ? "WaifUPnP" : description).append("</NewPortMappingDescription>")
+                    .append("<NewLeaseDuration>0</NewLeaseDuration>");
         } else if (action.equals("DeletePortMapping") || action.equals("GetSpecificPortMappingEntry")) {
-             sb.append("<NewRemoteHost></NewRemoteHost>")
-               .append("<NewExternalPort>").append(port).append("</NewExternalPort>")
-               .append("<NewProtocol>").append(protocol).append("</NewProtocol>");
+            sb.append("<NewRemoteHost></NewRemoteHost>")
+                    .append("<NewExternalPort>").append(port).append("</NewExternalPort>")
+                    .append("<NewProtocol>").append(protocol).append("</NewProtocol>");
+        } else if (action.equals("GetExternalIPAddress")) {
+            // No body parameters needed for this action
         }
 
         sb.append("</u:").append(action).append(">")
-          .append("</s:Body>")
-          .append("</s:Envelope>");
-        
+                .append("</s:Body>")
+                .append("</s:Envelope>");
+
         return sb.toString();
     }
-    
+
     /**
      * Improved IP detection. 
      * Finds the first non-loopback IPv4 address on an active interface.
